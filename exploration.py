@@ -1,7 +1,8 @@
 import netCDF4 as nc
+import numpy as np
 #Exploring how netCDF file is formatted
 
-file_path = '250725/sgpdlfptS5.b1.20230911.051918.cdf'
+file_path = 'SiteA1_2023_Onward/sa1.lidar.z04.c0.20231101.001000.sta.nc'
 dataset = nc.Dataset(file_path)
 
 # Check the global attributes of the file (metadata)
@@ -18,11 +19,3 @@ for var in dataset.variables:
     for attr in dataset.variables[var].ncattrs():
         print(f" - {attr}: {dataset.variables[var].getncattr(attr)}")
 
-# Check specific variable attributes (like 'units')
-print("\nUnits of key variables:")
-print(f"base_time: {dataset.variables['base_time'].units}")
-print(f"time_offset: {dataset.variables['time_offset'].units}")
-print(f"range: {dataset.variables['range'].units}")
-print(f"radial_velocity: {dataset.variables['radial_velocity'].units}")
-
-dataset.close()

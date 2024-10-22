@@ -1,106 +1,75 @@
 import os
-import glob
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from netCDF4 import Dataset, num2date
 
+# Load the NetCDF file
+file_path = 'SiteA1_2023_Onward/sa1.lidar.z04.c0.20231104.001000.sta.nc'
+dataset = Dataset(file_path, 'r')
 
-# Define the directory where your CDF files are stored
-data_directory = './250725'  # Update to desired path
+# Extract variables
+time_var = dataset.variables['time']
+height = dataset.variables['distance'][:]  # Extract height levels - SA2 called height
+Vhm = dataset.variables['wind_speed'][:, :]  # Mean horizontal wind speed - SA2 called Vhm
+qc_Vhm = dataset.variables['qc_wind_speed'][:, :]  # Quality check results - SA2 called qc_Vhm
 
-# Create a pattern to match the desired date
-file_pattern = os.path.join(data_directory, 'sgpdlfptS5.b1.20230403.*.cdf')
+# Convert time to UTC
+time_units = time_var.units  #right now in 'seconds since 1970-01-01'
+time_calendar = time_var.calendar if hasattr(time_var, 'calendar') else 'gregorian'
+time_values = num2date(time_var[:], units=time_units, calendar=time_calendar)
 
-# List all files matching the pattern
-file_list = glob.glob(file_pattern)
-datasets = []
-time_units = None  # This will store the units of the time variable
+# Replace fill values with NaN for Vhm
+Vhm[Vhm == -9999.0] = np.nan
 
-# Loop through the list of files and read each one
-for file in file_list:
-    ds = Dataset(file, mode='r')  # Open the dataset
-    print(f"Reading: {file}")
-    # Extract relevant variables
-    radial_velocity = ds.variables['radial_velocity'][:]
-    qc_variable = ds.variables['qc_radial_velocity'][:]  # Quality control variable
-    range_data = ds.variables['range'][:]  # Range = height
-    time = ds.variables['time'][:]  # Time variable
-    azimuth = ds.variables['azimuth'][:]  # Azimuth due north
+# Create a mask for quality checks (1: Bad, 2: Bad, 4: Bad)
+# 0 indicates good quality, so we mask out all bad values
+valid_mask = (qc_Vhm == 0)
 
-    # Save time units from the first file
-    if time_units is None:
-        time_units = ds.variables['time_offset'].units
+# Apply the mask to Vhm
+Vhm_masked = np.where(valid_mask, Vhm, np.nan)
 
-    # Append to the datasets list
-    datasets.append({
-        'radial_velocity': radial_velocity,
-        'qc_variable': qc_variable,
-        'range': range_data,
-        'time': time,
-        'azimuth': azimuth
-    })
-    
-    ds.close()  # Ensure that each dataset is closed after reading
+# Create a DataFrame for easy manipulation
+df = pd.DataFrame(Vhm_masked, columns=height)  # Create DataFrame with heights as columns
+df['time'] = time_values  # Add time as a new column
+df.set_index('time', inplace=True)  # Set time as the index
 
-# Concatenate all datasets along the time dimension
-radial_velocity_combined = np.concatenate([data['radial_velocity'] for data in datasets], axis=0)
-qc_variable_combined = np.concatenate([data['qc_variable'] for data in datasets], axis=0)
-range_data_combined = datasets[0]['range']  # Assuming range_data is the same for all
-time_combined = np.concatenate([data['time'] for data in datasets], axis=0)
-azimuth_combined = np.concatenate([data['azimuth'] for data in datasets], axis=0)
+# Ensure all values are numeric
+df[height] = df[height].apply(pd.to_numeric, errors='coerce')
 
-# Convert time to datetime objects using netCDF4.num2date
-time_combined_dates = num2date(time_combined, units=time_units)
+# Transpose the DataFrame for contourf (heights in rows, time in columns)
+df_t = df.transpose()
 
-# Keeping data where qc is 0
-# Create a mask where quality control is good (0 means valid)
-azimuth_mask = qc_variable_combined != 1  
+# Check for NaN values and drop them if necessary
+df_t = df_t.fillna(method='ffill')  # Forward fill NaNs (or choose another method as needed)
 
-# Apply the mask correctly
-radial_velocity_qc = np.where(qc_variable_combined != 1, radial_velocity_combined, np.nan)  
-azimuth_qc = np.where(azimuth_mask, azimuth_combined[:, np.newaxis], np.nan)  # Extend azimuth_combined to 2D
+# Create meshgrid for plotting (time vs height)
+time_numeric = mdates.date2num(df_t.columns)  # Convert time to matplotlib date numbers
+X, Y = np.meshgrid(time_numeric, df_t.index)  # Create meshgrid for plotting
 
-# Calculate wind speed using azimuth and radial velocity
-azimuth_radians = np.radians(azimuth_qc)
-
-V_e = np.zeros_like(radial_velocity_qc)
-V_n = np.zeros_like(radial_velocity_qc)
-
-# Compute east and north components of wind speed
-for i in range(radial_velocity_qc.shape[0]):
-    V_e[i, :] = radial_velocity_qc[i, :] * np.cos(azimuth_radians[i, :])  
-    V_n[i, :] = radial_velocity_qc[i, :] * np.sin(azimuth_radians[i, :]) 
-
-wind_speed = np.sqrt(V_e**2 + V_n**2)
-
-# Checking if wind_speed is a 2D array
-if wind_speed.ndim != 2:
-    print("Warning: wind_speed is not a 2D array. Check the dimensions.")
-
-# Create meshgrid for time and range data
-X, Y = np.meshgrid(mdates.date2num(time_combined_dates), range_data_combined)
-
-# Create a filled contour plot for wind speed
+# Plot wind speed using contourf
 plt.figure(figsize=(12, 6))
-contour = plt.contourf(X, Y, wind_speed.T, cmap='viridis', levels=20, extend='both')
+contour = plt.contourf(X, Y, df_t.values, cmap='viridis', levels=100)  # Use df_t.values
 
-# Formatting the x-axis as time
+# Format the x-axis as time (hour:minute)
 plt.gca().xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
-
-# Set x-axis to have uniform hour-by-hour increments
 plt.gca().xaxis.set_major_locator(mdates.HourLocator(interval=2))
-
-# Rotate date labels
 plt.gcf().autofmt_xdate()
 
+# Set y-axis ticks manually (from 40 to 220 in 20m increments)
+plt.gca().set_yticks(np.arange(40, 221, 20))  # Adjusting the upper limit to 240 for inclusive 220 tick
+
 # Add a color bar
-plt.colorbar(contour, label='Wind Speed (m/s)')  
+plt.colorbar(contour, label='Mean Horizontal Wind Speed (m/s)')
 
 # Adding labels and title
-plt.xlabel('Time of Day (HH:MM)')
+plt.xlabel('Time of Day (UTC)')
 plt.ylabel('Height (m)')
-plt.title('Site A2 Time-Height Profile of Wind Speed on April 3, 2023')
-print("Height shape: ", range_data_combined.shape)
+plt.title('Site A1 Time-Height Profile of Mean Horizontal Wind Speed on November 4, 2023')
+
 # Show the plot
 plt.show()
+
+# Close the dataset
+dataset.close()
